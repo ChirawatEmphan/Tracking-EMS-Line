@@ -1,0 +1,329 @@
+<?php
+
+// ข้อมูลสำหรับ Line API
+$channelAccessToken = '##############################';
+$channelSecret = '###################################';
+
+// ข้อมูลสำหรับ Thailand Post API
+$thailandPostToken = '############################################################';
+$trackAPIUrl = 'https://trackapi.thailandpost.co.th/post/api/v1/track';
+
+// ฟังก์ชันหลักในการรับ Webhook จาก LINE
+$jsonString = file_get_contents('php://input');
+$jsonObj = json_decode($jsonString, true);
+
+// ตรวจสอบว่ามีข้อมูล event เข้ามาหรือไม่
+if (isset($jsonObj['events'][0])) {
+    $event = $jsonObj['events'][0];
+    $replyToken = $event['replyToken'];
+    $messageType = $event['message']['type'];
+    
+    if ($messageType == 'text') {
+        $userMessage = $event['message']['text'];
+        
+        // ตรวจสอบคำสั่งจากผู้ใช้
+        if (strtolower($userMessage) === 'ตรวจสอบเลขพัสดุ') {
+            // ส่งข้อความให้ผู้ใช้กรอกเลขพัสดุ
+            $replyMessage = [
+                'type' => 'text',
+                'text' => 'กรุณากรอกเลขพัสดุที่ต้องการตรวจสอบ:'
+            ];
+            replyMessage($replyToken, $replyMessage);
+        } else {
+            // ตรวจสอบสถานะพัสดุ
+            $trackingNumber = $userMessage;
+            $trackingStatus = getThailandPostTrackingStatus($trackAPIUrl, $trackingNumber, $thailandPostToken);
+
+            if ($trackingStatus) {
+                $flexMessage = createFlexMessage($trackingStatus, $trackingNumber);
+                replyMessage($replyToken, [
+                    'type' => 'flex',
+                    'altText' => 'Tracking Status',
+                    'contents' => $flexMessage
+                ]);
+            } else {
+                // กรณีเกิดข้อผิดพลาด
+                $replyMessage = [
+                    'type' => 'text',
+                    'text' => 'ไม่พบข้อมูลของพัสดุที่ระบุ กรุณาตรวจสอบเลขพัสดุอีกครั้ง.'
+                ];
+                replyMessage($replyToken, $replyMessage);
+            }
+        }
+    } else {
+        // กรณีไม่ใช่ข้อความ text
+        $replyMessage = [
+            'type' => 'text',
+            'text' => 'ขออภัย ฉันสามารถรับข้อความที่เป็นตัวอักษรเท่านั้น'
+        ];
+        replyMessage($replyToken, $replyMessage);
+    }
+}
+
+// ฟังก์ชันสำหรับดึงข้อมูลสถานะพัสดุจาก Thailand Post API
+function getThailandPostTrackingStatus($url, $trackingNumber, $token) {
+    $data = [
+        "status" => "all",
+        "language" => "TH",
+        "barcode" => [$trackingNumber]
+    ];
+
+    $headers = [
+        "Authorization: Token $token",
+        "Content-Type: application/json"
+    ];
+
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+    curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+
+    $response = curl_exec($ch);
+    
+    if (curl_errno($ch)) {
+        error_log('Curl error: ' . curl_error($ch));
+        return false;
+    }
+    
+    curl_close($ch);
+
+    $result = json_decode($response, true);
+
+    // ตรวจสอบสถานะการตอบกลับของ API
+    if (isset($result['response']['items'][$trackingNumber])) {
+        return $result['response']['items'][$trackingNumber];
+    } else {
+        error_log('API response: ' . print_r($result, true));
+        return false;
+    }
+}
+
+function createFlexMessage($trackingStatus, $trackingNumber) {
+    // สร้างส่วนแสดงสถานะทั้งหมด
+    $statusBoxes = [];
+    foreach ($trackingStatus as $index => $status) {
+        $statusBox = [
+            "type" => "box",
+            "layout" => "vertical",
+            "contents" => [
+                [
+                    "type" => "text",
+                    "text" => $status['status_description'],
+                    "weight" => "bold",
+                    "size" => $index === 0 ? "xl" : "md",
+                    "color" => $index === 0 ? "#1DB446" : "#555555"
+                ],
+                [
+                    "type" => "box",
+                    "layout" => "vertical",
+                    "margin" => "lg",
+                    "spacing" => "sm",
+                    "contents" => [
+                        [
+                            "type" => "box",
+                            "layout" => "baseline",
+                            "spacing" => "sm",
+                            "contents" => [
+                                [
+                                    "type" => "text",
+                                    "text" => "วันที่:",
+                                    "color" => "#aaaaaa",
+                                    "size" => "sm",
+                                    "flex" => 1
+                                ],
+                                [
+                                    "type" => "text",
+                                    "text" => $status['status_date'],
+                                    "wrap" => true,
+                                    "color" => "#666666",
+                                    "size" => "sm",
+                                    "flex" => 5
+                                ]
+                            ]
+                        ],
+                        [
+                            "type" => "box",
+                            "layout" => "baseline",
+                            "spacing" => "sm",
+                            "contents" => [
+                                [
+                                    "type" => "text",
+                                    "text" => "สถานที่:",
+                                    "color" => "#aaaaaa",
+                                    "size" => "sm",
+                                    "flex" => 1
+                                ],
+                                [
+                                    "type" => "text",
+                                    "text" => $status['location'] . " (" . $status['postcode'] . ")",
+                                    "wrap" => true,
+                                    "color" => "#666666",
+                                    "size" => "sm",
+                                    "flex" => 5
+                                ]
+                            ]
+                        ]
+                    ]
+                ]
+            ]
+        ];
+
+        if (isset($status['status_detail']) && !empty($status['status_detail'])) {
+            $statusBox['contents'][1]['contents'][] = [
+                "type" => "box",
+                "layout" => "baseline",
+                "spacing" => "sm",
+                "contents" => [
+                    [
+                        "type" => "text",
+                        "text" => "รายละเอียด:",
+                        "color" => "#aaaaaa",
+                        "size" => "sm",
+                        "flex" => 1
+                    ],
+                    [
+                        "type" => "text",
+                        "text" => $status['status_detail'],
+                        "wrap" => true,
+                        "color" => "#666666",
+                        "size" => "sm",
+                        "flex" => 5
+                    ]
+                ]
+            ];
+        }
+
+        if (isset($status['receiver_name']) && !empty($status['receiver_name'])) {
+            $statusBox['contents'][1]['contents'][] = [
+                "type" => "box",
+                "layout" => "baseline",
+                "spacing" => "sm",
+                "contents" => [
+                    [
+                        "type" => "text",
+                        "text" => "ผู้รับ:",
+                        "color" => "#aaaaaa",
+                        "size" => "sm",
+                        "flex" => 1
+                    ],
+                    [
+                        "type" => "text",
+                        "text" => $status['receiver_name'],
+                        "wrap" => true,
+                        "color" => "#666666",
+                        "size" => "sm",
+                        "flex" => 5
+                    ]
+                ]
+            ];
+        }
+
+        $statusBoxes[] = $statusBox;
+
+        // เพิ่มเส้นคั่นระหว่างสถานะ (ยกเว้นสถานะสุดท้าย)
+        if ($index < count($trackingStatus) - 1) {
+            $statusBoxes[] = [
+                "type" => "separator",
+                "margin" => "xxl"
+            ];
+        }
+    }
+
+    
+    return [
+        "type" => "bubble",
+        "size" => "giga",
+        "header" => [
+            "type" => "box",
+            "layout" => "vertical",
+            "contents" => [
+                [
+                    "type" => "text",
+                    "text" => "ติดตามพัสดุ",
+                    "color" => "#ffffff",
+                    "size" => "lg",
+                    "weight" => "bold"
+                ]
+            ],
+            "backgroundColor" => "#0367D3",
+            "paddingTop" => "19px",
+            "paddingAll" => "12px",
+            "paddingBottom" => "16px"
+        ],
+        "body" => [
+            "type" => "box",
+            "layout" => "vertical",
+            "contents" => [
+                [
+                    "type" => "text",
+                    "text" => $trackingNumber,
+                    "color" => "#1DB446",
+                    "size" => "3xl",
+                    "weight" => "bold"
+                ],
+                [
+                    "type" => "box",
+                    "layout" => "vertical",
+                    "margin" => "lg",
+                    "spacing" => "sm",
+                    "contents" => $statusBoxes
+                ]
+            ]
+        ],
+        "footer" => [
+            "type" => "box",
+            "layout" => "vertical",
+            "spacing" => "sm",
+            "contents" => [
+                [
+                    "type" => "button",
+                    "style" => "primary",
+                    "height" => "sm",
+                    "action" => [
+                        "type" => "uri",
+                        "label" => "ติดต่อเจ้าหน้าที่ (1150)",
+                        "uri" => "tel:123456"
+                    ],
+                    "color" => "#ed0b0b"
+                ]
+            ],
+            "flex" => 0
+        ]
+    ];
+
+}
+
+// ฟังก์ชันสำหรับตอบกลับข้อความผ่าน Line API
+function replyMessage($replyToken, $message) {
+    global $channelAccessToken;
+
+    $url = 'https://api.line.me/v2/bot/message/reply';
+    $headers = [
+        "Content-Type: application/json",
+        "Authorization: Bearer $channelAccessToken"
+    ];
+
+    $postData = [
+        'replyToken' => $replyToken,
+        'messages' => [$message]
+    ];
+
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'POST');
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($postData));
+    curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+    $result = curl_exec($ch);
+    
+    if (curl_errno($ch)) {
+        error_log('Curl error: ' . curl_error($ch));
+    }
+    
+    curl_close($ch);
+    
+    error_log('LINE API response: ' . $result);
+}
+
+?>
